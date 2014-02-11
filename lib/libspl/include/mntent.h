@@ -125,6 +125,8 @@ extern "C" {
 #define	MNTOPT_NODFRATIME "nodfratime"	/* No Deferred access time updates */
 #define	MNTOPT_NBMAND	"nbmand"	/* allow non-blocking mandatory locks */
 #define	MNTOPT_NONBMAND	"nonbmand"	/* deny non-blocking mandatory locks */
+#define MNTOPT_RELATIME "relatime"  /* allow relative time updates */
+#define MNTOPT_NORELATIME "norelatime"/* do not allow relative time updates */
 #define	MNTOPT_XATTR	"xattr"		/* enable extended attributes */
 #define	MNTOPT_NOXATTR	"noxattr"	/* disable extended attributes */
 #define	MNTOPT_EXEC	"exec"		/* enable executables */
