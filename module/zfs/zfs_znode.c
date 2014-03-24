@@ -75,7 +75,7 @@ SYSCTL_INT(_debug_sizeof, OID_AUTO, znode, CTLFLAG_RD, 0, sizeof(znode_t),
 #endif
 void
 zfs_release_sa_handle(sa_handle_t *hdl, dmu_buf_t *db, void *tag);
-extern uint64_t vnop_num_reclaims;
+extern uint64_t vnop_num_vnode_create;
 
 
 
@@ -171,13 +171,16 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 #endif
 
 	list_link_init(&zp->z_link_node);
-	list_link_init(&zp->z_link_reclaim_node);
+	list_link_init(&zp->z_link_vnode_create_node);
 
 	mutex_init(&zp->z_lock, NULL, MUTEX_DEFAULT, NULL);
     rw_init(&zp->z_map_lock, NULL, RW_DEFAULT, NULL);
 	rw_init(&zp->z_parent_lock, NULL, RW_DEFAULT, NULL);
 	rw_init(&zp->z_name_lock, NULL, RW_DEFAULT, NULL);
 	mutex_init(&zp->z_acl_lock, NULL, MUTEX_DEFAULT, NULL);
+
+	mutex_init(&zp->z_vnode_create_lock, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&zp->z_vnode_create_cv, NULL, CV_DEFAULT, NULL);
 
 	mutex_init(&zp->z_range_lock, NULL, MUTEX_DEFAULT, NULL);
 	avl_create(&zp->z_range_avl, zfs_range_compare,
@@ -206,6 +209,9 @@ zfs_znode_cache_destructor(void *buf, void *arg)
 	mutex_destroy(&zp->z_acl_lock);
 	avl_destroy(&zp->z_range_avl);
 	mutex_destroy(&zp->z_range_lock);
+
+	mutex_destroy(&zp->z_vnode_create_lock);
+	cv_destroy(&zp->z_vnode_create_cv);
 
 	ASSERT(zp->z_dirlocks == NULL);
 	ASSERT(zp->z_acl_cached == NULL);
@@ -717,7 +723,6 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	zp->z_is_zvol = 0;
 	zp->z_is_mapped = 0;
 	zp->z_is_ctldir = 0;
-    zp->z_reclaimed = B_FALSE;
 	zp->z_vid = 0;
 	zp->z_uid = 0;
 	zp->z_gid = 0;
@@ -874,6 +879,7 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
     sa_bulk_attr_t  *sa_attrs;
 	int		cnt = 0;
 	zfs_acl_locator_cb_t locate = { 0 };
+    int wait_on_vnode = 0;
 
 	ASSERT(vap && (vap->va_mask & (AT_TYPE|AT_MODE)) == (AT_TYPE|AT_MODE));
 
@@ -1081,18 +1087,10 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 
 	if (!(flag & IS_ROOT_NODE)) {
 
-        /*
-         * We must not hold any locks while calling vnode_create inside
-         * zfs_znode_alloc(), as it may call either of vnop_reclaim, or
-         * vnop_fsync.
-         */
-        //zfs_release_sa_handle(sa_hdl, db, FTAG);
 		*zpp = zfs_znode_alloc(zfsvfs, db, 0, obj_type, sa_hdl);
 		ASSERT(*zpp != NULL);
-        //ZFS_OBJ_HOLD_ENTER(zfsvfs, obj);
-        //VERIFY(0 == sa_buf_hold(zfsvfs->z_os, obj, NULL, &db));
-        //VERIFY(0 == sa_handle_get_from_db(zfsvfs->z_os, db, NULL,
-        //                                  SA_HDL_SHARED, &sa_hdl));
+        wait_on_vnode = 1;
+
 	} else {
 		/*
 		 * If we are creating the root node, the "parent" we
@@ -1128,6 +1126,7 @@ zfs_mknode(znode_t *dzp, vattr_t *vap, dmu_tx_t *tx, cred_t *cr,
 
 	kmem_free(sa_attrs, sizeof (sa_bulk_attr_t) * ZPL_END);
 	ZFS_OBJ_HOLD_EXIT(zfsvfs, obj);
+
 	getnewvnode_drop_reserve();
 }
 
@@ -1235,7 +1234,7 @@ zfs_zget(zfsvfs_t *zfsvfs, uint64_t obj_num, znode_t **zpp)
 	struct vnode		*vp;
 	sa_handle_t	*hdl;
 	struct thread	*td;
-	int err;
+	int err = 0;
 
     dprintf("+zget %lld\n", obj_num);
 
@@ -1329,33 +1328,9 @@ again:
         ZFS_OBJ_HOLD_EXIT(zfsvfs, obj_num);
         getnewvnode_drop_reserve();
 
-        /* remove zp from reclaim list now */
-        mutex_enter(&zfsvfs->z_reclaim_list_lock);
-        if (zp->z_reclaimed) {
-            list_remove(&zfsvfs->z_reclaim_znodes, zp);
-#ifdef _KERNEL
-            atomic_dec_64(&vnop_num_reclaims);
-#endif
-            zp->z_reclaimed = B_FALSE;
-            dprintf("Found stray zp %p without vp, correcting\n", zp);
+        printf("Found stray zp %p without vp, correcting\n", zp);
 
 
-        } else { /* Not on the reclaim list, most likely reclaim_thr ate it
-                  * before us, retry */
-            zp = NULL;
-        }
-        mutex_exit(&zfsvfs->z_reclaim_list_lock);
-
-        /* if we got one, release it now */
-        if (zp) {
-            rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_READER);
-            if (zp->z_sa_hdl == NULL)
-                zfs_znode_free(zp);
-            else
-                zfs_zinactive(zp);
-            rw_exit(&zfsvfs->z_teardown_inactive_lock);
-            zp = NULL;
-        }
         /*
          * Loop so that we end up below allocating a new vp
          */
@@ -1401,6 +1376,12 @@ again:
 	}
     ZFS_OBJ_HOLD_EXIT(zfsvfs, obj_num);
 	getnewvnode_drop_reserve();
+
+    /* Make sure VP is attached before resuming - after unlocks */
+    if (!err)
+        zfs_znode_wait_vnode(zp);
+
+
     dprintf("zget returning %d\n", err);
 	return (err);
 }
@@ -2151,9 +2132,9 @@ zfs_create_fs(objset_t *os, cred_t *cr, nvlist_t *zplprops, dmu_tx_t *tx)
 	mutex_init(&zfsvfs.z_znodes_lock, NULL, MUTEX_DEFAULT, NULL);
 	list_create(&zfsvfs.z_all_znodes, sizeof (znode_t),
 	    offsetof(znode_t, z_link_node));
-	mutex_init(&zfsvfs.z_reclaim_list_lock, NULL, MUTEX_DEFAULT, NULL);
-	list_create(&zfsvfs.z_reclaim_znodes, sizeof (znode_t),
-	    offsetof(znode_t, z_link_reclaim_node));
+	mutex_init(&zfsvfs.z_vnode_create_list_lock, NULL, MUTEX_DEFAULT, NULL);
+	list_create(&zfsvfs.z_vnode_create_znodes, sizeof (znode_t),
+	    offsetof(znode_t, z_link_vnode_create_node));
 
 	for (i = 0; i != ZFS_OBJ_MTX_SZ; i++)
 		mutex_init(&zfsvfs.z_hold_mtx[i], NULL, MUTEX_DEFAULT, NULL);
@@ -2163,6 +2144,7 @@ zfs_create_fs(objset_t *os, cred_t *cr, nvlist_t *zplprops, dmu_tx_t *tx)
 	    cr, NULL, &acl_ids));
 	zfs_mknode(rootzp, &vattr, tx, cr, IS_ROOT_NODE, &zp, &acl_ids);
 	ASSERT3P(zp, ==, rootzp);
+    zfs_znode_wait_vnode(rootzp);
 	error = zap_add(os, moid, ZFS_ROOT_OBJ, 8, 1, &rootzp->z_id, tx);
 	ASSERT(error == 0);
 	zfs_acl_ids_free(&acl_ids);

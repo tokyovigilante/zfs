@@ -303,6 +303,7 @@ zfs_replay_create_acl(zfsvfs_t *zsb, lr_acl_create_t *lracl, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_doid, &dzp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(dzp);
 
 	xva_init(&xva);
 	zfs_init_vattr(&xva.xva_vattr, AT_MODE | AT_UID | AT_GID,
@@ -430,6 +431,7 @@ zfs_replay_create(zfsvfs_t *zsb, lr_create_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_doid, &dzp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(dzp);
 
 	xva_init(&xva);
 	zfs_init_vattr(&xva.xva_vattr, AT_MODE | AT_UID | AT_GID,
@@ -542,6 +544,7 @@ zfs_replay_remove(zfsvfs_t *zsb, lr_remove_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_doid, &dzp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(dzp);
 
 	if (lr->lr_common.lrc_txtype & TX_CI)
 		vflg |= FIGNORECASE;
@@ -575,11 +578,13 @@ zfs_replay_link(zfsvfs_t *zsb, lr_link_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_doid, &dzp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(dzp);
 
 	if ((error = zfs_zget(zsb, lr->lr_link_obj, &zp)) != 0) {
 		vnode_put(ZTOV(dzp));
 		return (error);
 	}
+    zfs_znode_wait_vnode(zp);
 
 	if (lr->lr_common.lrc_txtype & TX_CI)
 		vflg |= FIGNORECASE;
@@ -606,11 +611,13 @@ zfs_replay_rename(zfsvfs_t *zsb, lr_rename_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_sdoid, &sdzp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(sdzp);
 
 	if ((error = zfs_zget(zsb, lr->lr_tdoid, &tdzp)) != 0) {
 		vnode_put(ZTOV(sdzp));
 		return (error);
 	}
+    zfs_znode_wait_vnode(tdzp);
 
 	if (lr->lr_common.lrc_txtype & TX_CI)
 		vflg |= FIGNORECASE;
@@ -645,6 +652,7 @@ zfs_replay_write(zfsvfs_t *zsb, lr_write_t *lr, boolean_t byteswap)
 			error = 0;
 		return (error);
 	}
+    zfs_znode_wait_vnode(zp);
 
 	offset = lr->lr_offset;
 	length = lr->lr_length;
@@ -701,6 +709,7 @@ zfs_replay_write2(zfsvfs_t *zsb, lr_write_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_foid, &zp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(zp);
 
 top:
 	end = lr->lr_offset + lr->lr_length;
@@ -746,6 +755,7 @@ zfs_replay_truncate(zfsvfs_t *zsb, lr_truncate_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_foid, &zp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(zp);
 
 	bzero(&fl, sizeof (fl));
 	fl.l_type = F_WRLCK;
@@ -781,6 +791,7 @@ zfs_replay_setattr(zfsvfs_t *zsb, lr_setattr_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_foid, &zp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(zp);
 
 	zfs_init_vattr(vap, lr->lr_mask, lr->lr_mode,
 	    lr->lr_uid, lr->lr_gid, 0, lr->lr_foid);
@@ -828,6 +839,7 @@ zfs_replay_acl_v0(zfsvfs_t *zsb, lr_acl_v0_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_foid, &zp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(zp);
 
 	bzero(&vsa, sizeof (vsa));
 	vsa.vsa_mask = VSA_ACE | VSA_ACECNT;
@@ -877,6 +889,7 @@ zfs_replay_acl(zfsvfs_t *zsb, lr_acl_t *lr, boolean_t byteswap)
 
 	if ((error = zfs_zget(zsb, lr->lr_foid, &zp)) != 0)
 		return (error);
+    zfs_znode_wait_vnode(zp);
 
 	bzero(&vsa, sizeof (vsa));
 	vsa.vsa_mask = VSA_ACE | VSA_ACECNT | VSA_ACE_ACLFLAGS;

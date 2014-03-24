@@ -2466,6 +2466,7 @@ zfs_zaccess(znode_t *zp, int mode, int flags, boolean_t skipaclchk, cred_t *cr)
 			error = zfs_zget(ZTOZFS(zp), parent, &check_zp);
 			if (error)
 				return (error);
+            zfs_znode_wait_vnode(check_zp);
 
 			rw_enter(&zp->z_xattr_lock, RW_WRITER);
 			if (zp->z_xattr_parent == NULL)

@@ -222,15 +222,13 @@ typedef struct znode {
 	nvlist_t	*z_xattr_cached; /* cached xattrs */
 	struct znode	*z_xattr_parent; /* xattr parent znode */
 	list_node_t	z_link_node;	/* all znodes in fs link */
-	list_node_t	z_link_reclaim_node;	/* all reclaim znodes in fs link */
+	list_node_t	z_link_vnode_create_node;	/* all reclaim znodes in fs link */
 	sa_handle_t	*z_sa_hdl;	/* handle to sa data */
 	boolean_t	z_is_sa;	/* are we native sa? */
 
 	boolean_t	z_is_zvol;	/* are we used by the zvol */
 	boolean_t	z_is_mapped;	/* are we mmap'ed */
 	boolean_t	z_is_ctldir;	/* are we .zfs entry */
-
-    boolean_t   z_reclaimed;    /* placed in the reclaim list */
 
     krwlock_t       z_map_lock;     /* page map lock */
 
@@ -241,6 +239,10 @@ typedef struct znode {
 #endif
 
 	boolean_t	z_is_stale;	/* are we stale due to rollback? */
+
+    kmutex_t		z_vnode_create_lock; /* used to signal zp thead when */
+    kcondvar_t	    z_vnode_create_cv;	 /* vnode_create has finished */
+
 
 } znode_t;
 
@@ -413,7 +415,7 @@ extern void zfs_log_setattr(zilog_t *zilog, dmu_tx_t *tx, uint64_t txtype,
 
 extern void zfs_log_acl(zilog_t *zilog, dmu_tx_t *tx, znode_t *zp,
                         vsecattr_t *vsecp, zfs_fuid_info_t *fuidp);
-extern void vnop_reclaim_thread(void *arg);
+extern void vnop_vnode_create_thread(void *arg);
 
 //extern void zfs_log_acl(zilog_t *zilog, dmu_tx_t *tx, uint64_t txtype,
 //         znode_t *zp, int aclcnt, ace_t *z_ace, zfs_fuid_info_t *fuidp);

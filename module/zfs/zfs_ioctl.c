@@ -4994,6 +4994,7 @@ zfs_ioc_smb_acl(zfs_cmd_t *zc)
 		ZFS_EXIT(zsb);
 		return (error);
 	}
+    zfs_znode_wait_vnode(sharedir);
 
 	switch (zc->zc_cookie) {
 	case ZFS_SMB_ACL_ADD:
