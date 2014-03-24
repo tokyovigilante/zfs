@@ -2013,7 +2013,8 @@ top:
 		zfs_dirent_unlock(dl);
 		VN_RELE(vp);
 		if (wait_for_xzp) zfs_znode_wait_vnode(xzp);
-        VN_RELE(ZTOV(xzp));
+        if (xzp)
+            VN_RELE(ZTOV(xzp));
 
 		if (error == ERESTART) {
 			waited = B_TRUE;
