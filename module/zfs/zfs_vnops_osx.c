@@ -2761,7 +2761,7 @@ static int _zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp
 		break;
 	}
 
-    while (vnode_create(VNCREATE_FLAVOR, VCREATESIZE, &vfsp, vpp) != 0) delay(hz<<4);
+    while (vnode_create(VNCREATE_FLAVOR, VCREATESIZE, &vfsp, vpp) != 0) delay(hz>>4);
 
     dprintf("Assigned zp %p with vp %p\n", zp, *vpp);
 
