@@ -252,8 +252,8 @@ SYSCTL_INT(_zfs, OID_AUTO, vnop_create_negatives,
            CTLFLAG_RW, &zfs_vnop_create_negatives, 0,
            "Create negative cache entries");
 extern uint64_t vnop_num_vnode_create;
-SYSCTL_QUAD(_zfs, OID_AUTO, vnode_create_list, CTLFLAG_RD,
-            &vnop_num_vnode_create, "Num of vnode_create nodes in list")
+SYSCTL_QUAD(_zfs, OID_AUTO, vnode_create_threads, CTLFLAG_RD,
+            &vnop_num_vnode_create, "Num of vnode_create threads")
 #endif
 
 

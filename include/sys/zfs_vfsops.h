@@ -84,11 +84,6 @@ struct zfsvfs {
         uint64_t        z_version;
         uint64_t        z_shares_dir;   /* hidden shares dir */
         kmutex_t	    z_lock;
-        kmutex_t	    z_vnode_create_list_lock; /* lock for using vp create*/
-        list_t          z_vnode_create_znodes;/* all zp for vnode create */
-        boolean_t       z_vnode_create_thread_exit;
-        kmutex_t		z_vnode_create_thr_lock;
-        kcondvar_t	    z_vnode_create_thr_cv;	/* used to signal vp thr */
     	uint64_t	    z_userquota_obj;
         uint64_t	    z_groupquota_obj;
         uint64_t	    z_replay_eof;	/* New end of file - replay only */

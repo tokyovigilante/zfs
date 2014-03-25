@@ -171,7 +171,6 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 #endif
 
 	list_link_init(&zp->z_link_node);
-	list_link_init(&zp->z_link_vnode_create_node);
 
 	mutex_init(&zp->z_lock, NULL, MUTEX_DEFAULT, NULL);
     rw_init(&zp->z_map_lock, NULL, RW_DEFAULT, NULL);
@@ -2130,9 +2129,6 @@ zfs_create_fs(objset_t *os, cred_t *cr, nvlist_t *zplprops, dmu_tx_t *tx)
 	mutex_init(&zfsvfs.z_znodes_lock, NULL, MUTEX_DEFAULT, NULL);
 	list_create(&zfsvfs.z_all_znodes, sizeof (znode_t),
 	    offsetof(znode_t, z_link_node));
-	mutex_init(&zfsvfs.z_vnode_create_list_lock, NULL, MUTEX_DEFAULT, NULL);
-	list_create(&zfsvfs.z_vnode_create_znodes, sizeof (znode_t),
-	    offsetof(znode_t, z_link_vnode_create_node));
 
 	for (i = 0; i != ZFS_OBJ_MTX_SZ; i++)
 		mutex_init(&zfsvfs.z_hold_mtx[i], NULL, MUTEX_DEFAULT, NULL);

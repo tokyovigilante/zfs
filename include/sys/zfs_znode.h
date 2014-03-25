@@ -222,7 +222,6 @@ typedef struct znode {
 	nvlist_t	*z_xattr_cached; /* cached xattrs */
 	struct znode	*z_xattr_parent; /* xattr parent znode */
 	list_node_t	z_link_node;	/* all znodes in fs link */
-	list_node_t	z_link_vnode_create_node;	/* all reclaim znodes in fs link */
 	sa_handle_t	*z_sa_hdl;	/* handle to sa data */
 	boolean_t	z_is_sa;	/* are we native sa? */
 
