@@ -1371,11 +1371,13 @@ void vnop_vnode_create_thread(void *arg)
 #ifdef VERBOSE_VNODE_CREATE
             count++;
 #endif
+
+            /* call the actual vnode_create */
+            _zfs_znode_getvnode(zp, zp->z_zfsvfs, &vp);
+
 #ifdef _KERNEL
             atomic_dec_64(&vnop_num_vnode_create);
 #endif
-            /* call the actual vnode_create */
-            _zfs_znode_getvnode(zp, zp->z_zfsvfs, &vp);
 
 
         } // until empty
@@ -1394,7 +1396,7 @@ void vnop_vnode_create_thread(void *arg)
 		CALLB_CPR_SAFE_BEGIN(&cpr);
 		(void) cv_timedwait_interruptible(&zfsvfs->z_vnode_create_thr_cv,
                                           &zfsvfs->z_vnode_create_thr_lock,
-                                          (ddi_get_lbolt() + (hz>>1)));
+                                          (ddi_get_lbolt() + (hz)));
 		CALLB_CPR_SAFE_END(&cpr, &zfsvfs->z_vnode_create_thr_lock);
 
     } // forever
@@ -2768,10 +2770,12 @@ static int _zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp
 	vnode_settag(*vpp, VT_ZFS);
 
 	zp->z_vid = vnode_vid(*vpp);
-    zp->z_vnode = *vpp;
 
     /* If the requestor is waiting on us, wake them up */
+    mutex_enter(&zp->z_vnode_create_lock);
+    zp->z_vnode = *vpp;
     cv_signal(&zp->z_vnode_create_cv);
+    mutex_exit(&zp->z_vnode_create_lock);
 
     return 0;
 }
@@ -2780,22 +2784,29 @@ static int _zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp
 
 void zfs_znode_wait_vnode(znode_t *zp)
 {
+	callb_cpr_t cpr;
     int times = 0;
     /* Here we wait for z_vnode to be set (not NULL) */
-    if (zp->z_vnode) return;
+
+	CALLB_CPR_INIT(&cpr, &zp->z_vnode_create_lock, callb_generic_cpr, FTAG);
 
     /* Wait for vnode_create thread to wake us */
-	mutex_enter(&zp->z_vnode_create_lock);
+    mutex_enter(&zp->z_vnode_create_lock);
+    if (zp->z_vnode) {
+        mutex_exit(&zp->z_vnode_create_lock);
+        return;
+    }
     while (!zp->z_vnode) {
+		CALLB_CPR_SAFE_BEGIN(&cpr);
 		(void) cv_timedwait_interruptible(&zp->z_vnode_create_cv,
                                           &zp->z_vnode_create_lock,
-                                          (ddi_get_lbolt() + (hz>>4)));
+                                          (ddi_get_lbolt() + (hz)));
+		CALLB_CPR_SAFE_END(&cpr, &zp->z_vnode_create_lock);
         times++;
-        if (times == 40)
+        if (times == 20)
             printf("ZFS: zp %p is still waiting on vnode\n", zp);
     }
-	mutex_exit(&zp->z_vnode_create_lock);
-
+    mutex_exit(&zp->z_vnode_create_lock);
 }
 
 /*
@@ -2813,7 +2824,9 @@ int zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp)
     mutex_exit(&zfsvfs->z_vnode_create_list_lock);
 
     /* Wake up the vnode_create thread now */
-    cv_broadcast(&zfsvfs->z_vnode_create_thr_cv);
+    mutex_enter(&zfsvfs->z_vnode_create_thr_lock);
+    cv_signal(&zfsvfs->z_vnode_create_thr_cv);
+    mutex_exit(&zfsvfs->z_vnode_create_thr_lock);
     return 0;
 }
 
