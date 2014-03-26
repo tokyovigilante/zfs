@@ -2735,6 +2735,12 @@ void zfs_znode_wait_vnode(znode_t *zp)
         times++;
         if (times == 20)
             printf("ZFS: zp %p is still waiting on vnode\n", zp);
+
+        if (times == 60) {
+            printf("ZFS: resuming %p to attempt to avoid deadlock\n", zp);
+            break;
+        }
+
     }
     mutex_exit(&zp->z_vnode_create_lock);
 }
@@ -2747,8 +2753,8 @@ int zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp)
 
 
     zp->z_zfsvfs = zfsvfs;
-	(void) thread_create(NULL, 0, _zfs_znode_getvnode, zp, 0, &p0,
-                         TS_RUN, minclsyspri);
+	while (thread_create(NULL, 0, _zfs_znode_getvnode, zp, 0, &p0,
+                         TS_RUN, minclsyspri) == NULL) delay(hz>>4);
 
     return 0;
 }

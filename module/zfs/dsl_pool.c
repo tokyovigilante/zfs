@@ -1053,4 +1053,3 @@ dsl_pool_config_held(dsl_pool_t *dp)
 {
     return (RRW_LOCK_HELD(&dp->dp_config_rwlock));
 }
-

@@ -2136,9 +2136,12 @@ zfs_create_fs(objset_t *os, cred_t *cr, nvlist_t *zplprops, dmu_tx_t *tx)
 	rootzp->z_zfsvfs = &zfsvfs;
 	VERIFY(0 == zfs_acl_ids_create(rootzp, IS_ROOT_NODE, &vattr,
 	    cr, NULL, &acl_ids));
+    /*
+     * Note we do not wait for the z_vnode to be filled in here, as it
+     * is not expected to be used. (We even set it to NULL before we exit)
+     */
 	zfs_mknode(rootzp, &vattr, tx, cr, IS_ROOT_NODE, &zp, &acl_ids);
 	ASSERT3P(zp, ==, rootzp);
-    zfs_znode_wait_vnode(rootzp);
 	error = zap_add(os, moid, ZFS_ROOT_OBJ, 8, 1, &rootzp->z_id, tx);
 	ASSERT(error == 0);
 	zfs_acl_ids_free(&acl_ids);

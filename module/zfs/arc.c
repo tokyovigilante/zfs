@@ -6182,7 +6182,7 @@ void arc_register_oids(void)
     sysctl_register_oid(&sysctl__zfs_vnop_ignore_negatives);
     sysctl_register_oid(&sysctl__zfs_vnop_ignore_positives);
     sysctl_register_oid(&sysctl__zfs_vnop_create_negatives);
-    sysctl_register_oid(&sysctl__zfs_vnode_create_list);
+    sysctl_register_oid(&sysctl__zfs_vnode_create_threads);
 
 }
 
@@ -6222,6 +6222,6 @@ void arc_unregister_oids(void)
     sysctl_unregister_oid(&sysctl__zfs_vnop_ignore_negatives);
     sysctl_unregister_oid(&sysctl__zfs_vnop_ignore_positives);
     sysctl_unregister_oid(&sysctl__zfs_vnop_create_negatives);
-    sysctl_unregister_oid(&sysctl__zfs_vnode_create_list);
+    sysctl_unregister_oid(&sysctl__zfs_vnode_create_threads);
 }
 #endif
