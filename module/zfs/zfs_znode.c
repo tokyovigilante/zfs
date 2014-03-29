@@ -1310,13 +1310,6 @@ again:
             return (err);
         }
 
-        /*
-         * We have this strange race in OSX where vnop_reclaim has been called
-         * so we released vp, and placed zp on reclaim list. But reclaim has
-         * not yet removed it from the reclaim-list so it is still around.
-         * When we detect this here, we force a reclaim right now, then go
-         * a head and allocate a new zp
-         */
 
         /* VP is NULL */
 
@@ -1326,11 +1319,13 @@ again:
         getnewvnode_drop_reserve();
 
         printf("Found stray zp %p without vp, correcting\n", zp);
+        rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_READER);
+        if (zp->z_sa_hdl == NULL)
+            zfs_znode_free(zp);
+        else
+            zfs_zinactive(zp);
+        rw_exit(&zfsvfs->z_teardown_inactive_lock);
 
-
-        /*
-         * Loop so that we end up below allocating a new vp
-         */
         goto again;
 
     } /* HDL != NULL */
