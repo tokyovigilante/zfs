@@ -192,6 +192,8 @@ extern int    zfs_znode_getvnode( znode_t *zp, zfsvfs_t *zfsvfs,
                                   struct vnode **vpp);
 extern void   getnewvnode_reserve( int num );
 extern void   getnewvnode_drop_reserve( void );
+extern void   zfs_znode_wait_vnode(znode_t *zp);
+
 extern int    zfs_vfsops_init(void);
 extern int    zfs_vfsops_fini(void);
 

@@ -294,7 +294,6 @@ txg_hold_open(dsl_pool_t *dp, txg_handle_t *th)
 	tx_state_t *tx = &dp->dp_tx;
 	tx_cpu_t *tc;
 	uint64_t txg;
-
 	/*
 	 * It appears the processor id is simply used as a "random"
 	 * number to index into the array, and there isn't any other

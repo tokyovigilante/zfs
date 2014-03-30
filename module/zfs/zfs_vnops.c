@@ -1252,6 +1252,7 @@ zfs_get_data(void *arg, lr_write_t *lr, char *buf, zio_t *zio)
 	 */
 	if (zfs_zget(zfsvfs, object, &zp) != 0)
 		return (SET_ERROR(ENOENT));
+    zfs_znode_wait_vnode(zp);
 	if (zp->z_unlinked) {
 		/*
 		 * Release the vnode asynchronously as we currently have the
@@ -1644,6 +1645,7 @@ zfs_create(vnode_t *dvp, char *name, vattr_t *vap, int excl, int mode,
 	void		*vsecp = NULL;
 	int		flag = 0;
 	boolean_t	waited = B_FALSE;
+    int wait_for_zp = 0;
 
 	/*
 	 * If we have an ephemeral id, ACL, or XVATTR then
@@ -1779,6 +1781,7 @@ top:
 			return (error);
 		}
 		zfs_mknode(dzp, vap, tx, cr, 0, &zp, &acl_ids);
+        wait_for_zp = 1;
 
 		if (fuid_dirtied)
 			zfs_fuid_sync(zfsvfs, tx);
@@ -1791,6 +1794,7 @@ top:
 		    vsecp, acl_ids.z_fuidp, vap);
 		zfs_acl_ids_free(&acl_ids);
 		dmu_tx_commit(tx);
+
 	} else {
 		int aflags = (flag & FAPPEND) ? V_APPEND : 0;
 
@@ -1845,15 +1849,19 @@ out:
 		zfs_dirent_unlock(dl);
 
 	if (error) {
-		if (zp)
+		if (zp && ZTOV(zp))
 			VN_RELE(ZTOV(zp));
-	} else {
-		*vpp = ZTOV(zp);
-		error = specvp_check(vpp, cr);
 	}
 
 	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
+
+    if (!error) {
+        if (wait_for_zp)
+            zfs_znode_wait_vnode(zp);
+		*vpp = ZTOV(zp);
+		error = specvp_check(vpp, cr);
+    }
 
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -1901,6 +1909,7 @@ zfs_remove(vnode_t *dvp, char *name, cred_t *cr, caller_context_t *ct,
 	int		error;
 	int		zflg = ZEXISTS;
 	boolean_t	waited = B_FALSE;
+    int wait_for_xzp = 0;
 
 	ZFS_ENTER(zfsvfs);
 	ZFS_VERIFY_ZP(dzp);
@@ -1985,6 +1994,7 @@ top:
 	    &xattr_obj, sizeof (xattr_obj));
 	if (error == 0 && xattr_obj) {
 		error = zfs_zget(zfsvfs, xattr_obj, &xzp);
+        wait_for_xzp = 1;
 		ASSERT(error==0);
 		dmu_tx_hold_sa(tx, zp->z_sa_hdl, B_TRUE);
 		dmu_tx_hold_sa(tx, xzp->z_sa_hdl, B_FALSE);
@@ -2002,8 +2012,10 @@ top:
 	if (error) {
 		zfs_dirent_unlock(dl);
 		VN_RELE(vp);
-		if (xzp)
-			VN_RELE(ZTOV(xzp));
+		if (wait_for_xzp) zfs_znode_wait_vnode(xzp);
+        if (xzp)
+            VN_RELE(ZTOV(xzp));
+
 		if (error == ERESTART) {
 			waited = B_TRUE;
 			dmu_tx_wait(tx);
@@ -2127,11 +2139,13 @@ out:
 
 	if (!delete_now)
 		VN_RELE(vp);
-	if (xzp)
-		VN_RELE(ZTOV(xzp));
 
 	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
+
+    if (wait_for_xzp) zfs_znode_wait_vnode(xzp);
+	if (xzp)
+        VN_RELE(ZTOV(xzp));
 
 	ZFS_EXIT(zfsvfs);
 	return (error);
@@ -2306,8 +2320,6 @@ top:
 	 */
 	(void) zfs_link_create(dl, zp, tx, ZNEW);
 
-	*vpp = ZTOV(zp);
-
 	txtype = zfs_log_create_txtype(Z_DIR, vsecp, vap);
 	if (flags & FIGNORECASE)
 		txtype |= TX_CI;
@@ -2322,6 +2334,9 @@ top:
 
 	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
+
+    zfs_znode_wait_vnode(zp);
+	*vpp = ZTOV(zp);
 
 	ZFS_EXIT(zfsvfs);
 	return (0);
@@ -3204,6 +3219,7 @@ zfs_setattr(vnode_t *vp, vattr_t *vap, int flags, cred_t *cr,
 	boolean_t	fuid_dirtied = B_FALSE;
 	sa_bulk_attr_t	bulk[7], xattr_bulk[7];
 	int		count = 0, xattr_count = 0;
+    int wait_for_attrzp = 0;
 
 	if (mask == 0)
 		return (0);
@@ -3539,6 +3555,7 @@ top:
 			err = zfs_zget(zp->z_zfsvfs, xattr_obj, &attrzp);
 			if (err)
 				goto out2;
+            zfs_znode_wait_vnode(attrzp);
 		}
 		if (mask & AT_UID) {
 			new_uid = zfs_fuid_create(zfsvfs,
@@ -3977,6 +3994,7 @@ zfs_rename_lock(znode_t *szp, znode_t *tdzp, znode_t *sdzp, zfs_zlock_t **zlpp)
 			int error = zfs_zget(zp->z_zfsvfs, oidp, &zp);
 			if (error)
 				return (error);
+            zfs_znode_wait_vnode(zp);
 			zl->zl_znode = zp;
 		}
 		(void) sa_lookup(zp->z_sa_hdl, SA_ZPL_PARENT(zp->z_zfsvfs),
@@ -4502,7 +4520,6 @@ top:
 	if (flags & FIGNORECASE)
 		txtype |= TX_CI;
 	zfs_log_symlink(zilog, tx, txtype, dzp, zp, name, link);
-	*vpp = ZTOV(zp);
 
 	zfs_acl_ids_free(&acl_ids);
 
@@ -4512,6 +4529,9 @@ top:
 
 	if (zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS)
 		zil_commit(zilog, 0);
+
+    zfs_znode_wait_vnode(zp);
+	*vpp = ZTOV(zp);
 
 	ZFS_EXIT(zfsvfs);
 	return (error);

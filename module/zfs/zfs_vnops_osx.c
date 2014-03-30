@@ -83,6 +83,9 @@ int zfs_vnop_create_negatives = 1;
 #define HAVE_NAMED_STREAMS 1
 
 //#define WITH_SEARCHFS
+#ifdef _KERNEL
+uint64_t vnop_num_vnode_create=0;
+#endif
 
 
 /*
@@ -221,7 +224,7 @@ zfs_vnop_ioctl(
         dprintf("vnop_ioctl: F_RDADVISE\n");
         break;
 	default:
-        dprintf("vnop_ioctl: Unknown ioctl %02lx ('%ul' + %ul)\n", 
+        dprintf("vnop_ioctl: Unknown ioctl %02lx ('%ul' + %ul)\n",
                ap->a_command,
                (ap->a_command&0xff00)>>8,
                ap->a_command&0xff);
@@ -493,11 +496,11 @@ zfs_vnop_mkdir(
     int error;
     dprintf("vnop_mkdir '%s'\n", ap->a_cnp->cn_nameptr);
 
-#if 0 // Let's deny OSX fseventd for now */
+#if 1 // Let's deny OSX fseventd for now */
     if (ap->a_cnp->cn_nameptr && !strcmp(ap->a_cnp->cn_nameptr,".fseventsd"))
         return EINVAL;
 #endif
-#if 0 //spotlight for now */
+#if 1 //spotlight for now */
     if (ap->a_cnp->cn_nameptr && !strcmp(ap->a_cnp->cn_nameptr,".Spotlight-V100"))
         return EINVAL;
 #endif
@@ -602,16 +605,6 @@ zfs_vnop_fsync(
     zfsvfs = zp->z_zfsvfs;
 
     if (!zfsvfs) return 0;
-
-    /*
-     * Because vnode_create() can end up calling fsync, which means we would
-     * sit around waiting for dmu_tx, while higher up in this thread may
-     * have called vnode_create(), while waiting for dmu_tx. We have wrapped
-     * the vnode_create() call with a lock, so we can ignore fsync while
-     * inside vnode_create().
-     */
-
-    if (zfsvfs->z_vnode_create_depth) return 0;
 
 	err = zfs_fsync(ap->a_vp, /*flag*/0, cr, ct);
     return err;
@@ -896,7 +889,7 @@ zfs_vnop_pagein(
     int             need_unlock = 0;
     int             error = 0;
 
-    dprintf("+vnop_pagein: off 0x%llx size 0x%zx\n",
+    dprintf("+vnop_pagein: off 0x%llx size 0x%llx\n",
            off, len);
 
     if (upl == (upl_t)NULL)
@@ -942,11 +935,13 @@ zfs_vnop_pagein(
      * Fill pages with data from the file.
      */
     while (len > 0) {
-        if (len < PAGESIZE)
-              break;
 
         dprintf("pagein from off 0x%llx into address %p (len 0x%lx)\n",
                off, vaddr, len);
+
+        if (len < PAGESIZE)
+              break;
+
         error = dmu_read(zp->z_zfsvfs->z_os, zp->z_id, off, PAGESIZE,
                          (void *)vaddr, DMU_READ_PREFETCH);
         if (error) {
@@ -1087,7 +1082,7 @@ zfs_vnop_pageout(
     uint64_t        filesz;
     int             err = 0;
 
-    dprintf("+vnop_pageout: off 0x%llx len ox%zx upl_off 0x%lx: blksz ox%ux, z_size 0x%llx\n",
+    dprintf("+vnop_pageout: off 0x%llx len 0x%x upl_off 0x%lx: blksz 0x%llx, z_size 0x%llx\n",
            off, len, upl_offset, zp->z_blksz, zp->z_size);
 	/*
 	 * XXX Crib this too, although Apple uses parts of zfs_putapage().
@@ -1101,15 +1096,6 @@ zfs_vnop_pageout(
         return (ENXIO);
     }
 
-    // Defer syncs if we are coming through vnode_create()
-    if (zfsvfs->z_vnode_create_depth) {
-        printf("zfs: awkward pageout exit\n");
-        if (!(flags & UPL_NOCOMMIT))
-            ubc_upl_abort(upl, UPL_ABORT_DUMP_PAGES |
-                          UPL_ABORT_FREE_ON_EMPTY);
-        return ENXIO;
-    }
-
     ZFS_ENTER(zfsvfs);
 
     ASSERT(vn_has_cached_data(vp));
@@ -1119,7 +1105,6 @@ zfs_vnop_pageout(
         panic("zfs_vnop_pageout: no upl!");
     }
     if (len <= 0) {
-        dprintf("zfs_vnop_pageout: invalid size %ld", len);
         if (!(flags & UPL_NOCOMMIT))
             (void) ubc_upl_abort(upl, 0);
         err = EINVAL;
@@ -1132,7 +1117,9 @@ zfs_vnop_pageout(
         err = EROFS;
         goto exit;
     }
+
     filesz = zp->z_size; /* get consistent copy of zp_size */
+
     if ((off < 0) || (off >= filesz) ||
         (off & PAGE_MASK_64) || (len & PAGE_MASK)) {
         if (!(flags & UPL_NOCOMMIT))
@@ -1141,6 +1128,19 @@ zfs_vnop_pageout(
         err = EINVAL;
         goto exit;
     }
+
+
+    uint64_t pgsize = roundup(filesz, PAGESIZE);
+
+     /* Any whole pages beyond the end of the while we abort */
+    if ((ap->a_size + ap->a_f_offset) > pgsize) {
+        printf("pageout: abort outside pages (rounded 0x%llx > UPLlen 0x%llx\n",
+               pgsize, ap->a_size + ap->a_f_offset);
+       ubc_upl_abort_range(upl, pgsize,
+                            pgsize - (ap->a_size + ap->a_f_offset),
+                            UPL_ABORT_FREE_ON_EMPTY);
+    }
+
     len = MIN(len, filesz - off);
  top:
     rl = zfs_range_lock(zp, off, len, RL_WRITER);
@@ -1180,36 +1180,38 @@ zfs_vnop_pageout(
         goto out;
     }
 
-#if 0
-    if (len <= PAGESIZE) {
-        caddr_t va;
-        printf("len is 0x%llx so dmu_write\n", len);
-        ASSERT3U(len, <=, PAGESIZE);
-        ubc_upl_map(upl, (vm_offset_t *)&va);
-        va += upl_offset;
-        dmu_write(zfsvfs->z_os, zp->z_id, off, len, va, tx);
-        ubc_upl_unmap(upl);
-    } else {
-        printf("osx_write_pages: off 0x%llx\n", off);
-        err = osx_write_pages(zfsvfs->z_os, zp->z_id, off, len, upl, tx);
-        if (err)printf("dmu_write say %d\n", err);
-    }
-#else
     caddr_t va;
 
     ubc_upl_map(upl, (vm_offset_t *)&va);
     va += upl_offset;
-    while (len > 0) {
-        ssize_t sz = MIN(len, PAGESIZE);
-
+    while (len >= PAGESIZE) {
+        ssize_t sz = PAGESIZE;
+        dprintf("pageout: dmu_write off 0x%llx size 0x%llx\n", off, sz);
         dmu_write(zfsvfs->z_os, zp->z_id, off, sz, va, tx);
         va += sz;
         off += sz;
         len -= sz;
     }
-    ubc_upl_unmap(upl);
 
-#endif
+    /* The last, possibly partial block, needs to have the data zeroed which
+     * would extend past the size of the file
+     */
+    if (len > 0) {
+        ssize_t sz = len;
+
+        dprintf("pageout: dmu_writeX off 0x%llx size 0x%llx\n", off, sz);
+        dmu_write(zfsvfs->z_os, zp->z_id, off, sz, va, tx);
+
+        va += sz;
+        off += sz;
+        len -= sz;
+
+        /* Zero out the remainder of the PAGE that didnt fit in filesize */
+        bzero(va, PAGESIZE-sz);
+        dprintf("zero last 0x%llx bytes.\n", PAGESIZE-sz);
+
+    }
+    ubc_upl_unmap(upl);
 
 
 	if (err == 0) {
@@ -1334,101 +1336,12 @@ zfs_vnop_inactive(
 	DECLARE_CRED(ap);
 
     //dprintf("+vnop_inactive\n");
-    if (zfsvfs->z_vnode_create_depth) return 0;
 
 	zfs_inactive(vp, cr, NULL);
     //dprintf("-vnop_inactive\n");
 	return (0);
 }
 
-#ifdef _KERNEL
-uint64_t vnop_num_reclaims=0;
-
-/*
- * Thread started to deal with any nodes in z_reclaim_nodes
- */
-void vnop_reclaim_thread(void *arg)
-{
-    znode_t *zp;
-	callb_cpr_t		cpr;
-    zfsvfs_t *zfsvfs = (zfsvfs_t *)arg;
-
-    //#define VERBOSE_RECLAIM
-#ifdef VERBOSE_RECLAIM
-    int count = 0;
-    printf("ZFS: reclaim %p thread is alive!\n", zfsvfs);
-#endif
-
-	CALLB_CPR_INIT(&cpr, &zfsvfs->z_reclaim_thr_lock, callb_generic_cpr, FTAG);
-
-	mutex_enter(&zfsvfs->z_reclaim_thr_lock);
-
-    while (1) {
-
-        while (1) {
-
-            mutex_enter(&zfsvfs->z_reclaim_list_lock);
-
-            zp = list_head(&zfsvfs->z_reclaim_znodes);
-            if (zp) {
-                list_remove(&zfsvfs->z_reclaim_znodes, zp);
-                if (zp) zp->z_reclaimed = B_FALSE;
-            }
-            mutex_exit(&zfsvfs->z_reclaim_list_lock);
-
-            /* Only exit thread once list is empty */
-            if (!zp) break;
-
-#ifdef VERBOSE_RECLAIM
-            count++;
-#endif
-#ifdef _KERNEL
-            atomic_dec_64(&vnop_num_reclaims);
-#endif
-            rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_READER);
-            if (zp->z_sa_hdl == NULL)
-                zfs_znode_free(zp);
-            else
-                zfs_zinactive(zp);
-            rw_exit(&zfsvfs->z_teardown_inactive_lock);
-
-        } // until empty
-
-#ifdef VERBOSE_RECLAIM
-        if (count)
-            printf("reclaim_thr: %p nodes released: %d (in list %llu)\n", zfsvfs, count, vnop_num_reclaims);
-        count = 0;
-#endif
-
-        /* Allow us to quit, since list is empty */
-        if (zfsvfs->z_reclaim_thread_exit == TRUE) break;
-
-		/* block until needed, or one second, whichever is shorter */
-#if 1
-        //RECLAIM_SIGNAL
-		CALLB_CPR_SAFE_BEGIN(&cpr);
-		(void) cv_timedwait_interruptible(&zfsvfs->z_reclaim_thr_cv,
-                                          &zfsvfs->z_reclaim_thr_lock,
-                                          (ddi_get_lbolt() + (hz>>1)));
-		CALLB_CPR_SAFE_END(&cpr, &zfsvfs->z_reclaim_thr_lock);
-#else
-
-        delay(hz>>1);
-
-#endif
-    } // forever
-
-#ifdef VERBOSE_RECLAIM
-    printf("ZFS: reclaim thread %p is quitting!\n", zfsvfs);
-#endif
-
-    zfsvfs->z_reclaim_thread_exit = FALSE;
-	cv_broadcast(&zfsvfs->z_reclaim_thr_cv);
-	CALLB_CPR_EXIT(&cpr);		/* drops zfsvfs->z_reclaim_thr_lock */
-
-    thread_exit();
-}
-#endif
 
 static int
 zfs_vnop_reclaim(
@@ -1458,49 +1371,18 @@ zfs_vnop_reclaim(
     vnode_clearfsnode(vp); /* vp->v_data = NULL */
     vnode_removefsref(vp); /* ADDREF from vnode_create */
 
-    /*
-     * Calls into vnode_create() can trigger reclaim and since we are
-     * likely to hold locks while inside vnode_create(), we need to defer
-     * reclaims until later.
-     */
-
     mutex_enter(&zfsvfs->z_znodes_lock);
     zp->z_vnode = NULL;
     list_remove(&zfsvfs->z_all_znodes, zp); //XXX
     mutex_exit(&zfsvfs->z_znodes_lock);
 
+    rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_READER);
+    if (zp->z_sa_hdl == NULL)
+        zfs_znode_free(zp);
+    else
+        zfs_zinactive(zp);
+    rw_exit(&zfsvfs->z_teardown_inactive_lock);
 
-    mutex_enter(&zfsvfs->z_reclaim_list_lock);
-    list_insert_tail(&zfsvfs->z_reclaim_znodes, zp);
-    zp->z_reclaimed = B_TRUE;
-    mutex_exit(&zfsvfs->z_reclaim_list_lock);
-
-#ifdef _KERNEL
-    atomic_inc_64(&vnop_num_reclaims);
-#endif
-
-#if 1
-    if (!has_warned && vnop_num_reclaims > 20000) {
-        has_warned = 1;
-        printf("ZFS: Reclaim thread is being slow (%llu)\n",
-               vnop_num_reclaims);
-    }
-#endif
-
-    /*
-     * Which is better, the reclaim thread triggering frequently, with mostly
-     * 1 node to reclaim each time, many times a second.
-     * Or, only once per second, and about ~1600 nodes?
-     */
-
-    /*
-     * We can either signal the reclaim-thread to wake up for each node
-     * or let it sleep for its own timeout and process nodes in bunches.
-     * We should measure which method is better.
-     */
-#ifdef RECLAIM_SIGNAL
-    cv_signal(&zfsvfs->z_reclaim_thr_cv);
-#endif
     return 0;
 }
 
@@ -2417,6 +2299,7 @@ zfs_vnop_readdirattr(
             if (zfs_zget(zfsvfs, objnum, &tmp_zp) == 0) {
                 if (vtype == VNON)
                     vtype = IFTOVT(tmp_zp->z_mode); // SA_LOOKUP?
+                zfs_znode_wait_vnode(tmp_zp);
             } else {
                 tmp_zp = NULL;
                 error = ENXIO;
@@ -2731,18 +2614,28 @@ void getnewvnode_drop_reserve()
     return;
 }
 
+
 /*
  * Get new vnode for znode.
  *
  * This function uses zp->z_zfsvfs, zp->z_mode, zp->z_flags, zp->z_id
  * and sets zp->z_vnode, zp->z_vid
+ *
+ * Signals the requesting thread, then terminates.
  */
-int zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp)
+static void _zfs_znode_getvnode(void *arg)
 {
+    znode_t *zp = (znode_t *)arg;
+    zfsvfs_t *zfsvfs = zp->z_zfsvfs;
+    struct vnode *vp = NULL;
 	struct vnode_fsparam vfsp;
 
+#ifdef _KERNEL
+    atomic_inc_64(&vnop_num_vnode_create);
+#endif
+
     dprintf("getvnode zp %p with vpp %p zfsvfs %p vfs %p\n",
-           zp, vpp, zfsvfs, zfsvfs->z_vfs);
+           zp, vp, zfsvfs, zfsvfs->z_vfs);
 
     if (zp->z_vnode)
         panic("zp %p vnode already set\n", zp->z_vnode);
@@ -2809,23 +2702,85 @@ int zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp)
 		break;
 	}
 
-    /*
-     * vnode_create() has a habit of calling both vnop_reclaim() and
-     * vnop_fsync(), which can create havok as we are already holding locks.
-     */
-    atomic_add_64(&zfsvfs->z_vnode_create_depth, 1);
-    while (vnode_create(VNCREATE_FLAVOR, VCREATESIZE, &vfsp, vpp) != 0);
-    atomic_sub_64(&zfsvfs->z_vnode_create_depth, 1);
+    while (vnode_create(VNCREATE_FLAVOR, VCREATESIZE, &vfsp, &vp) != 0) delay(hz>>4);
 
-    dprintf("Assigned zp %p with vp %p\n", zp, *vpp);
+    dprintf("Assigned zp %p with vp %p\n", zp, vp);
 
-	vnode_settag(*vpp, VT_ZFS);
+	vnode_settag(vp, VT_ZFS);
 
-	zp->z_vid = vnode_vid(*vpp);
-    zp->z_vnode = *vpp;
+	zp->z_vid = vnode_vid(vp);
+
+    /* If the requestor is waiting on us, wake them up */
+    mutex_enter(&zp->z_vnode_create_lock);
+    zp->z_vnode = vp;
+    cv_signal(&zp->z_vnode_create_cv);
+    mutex_exit(&zp->z_vnode_create_lock);
+
+#ifdef _KERNEL
+    atomic_dec_64(&vnop_num_vnode_create);
+#endif
+    thread_exit();
+}
+
+
+/*
+ * We have previously created a thread to call vnode_create() from
+ * zfs_znode_getvnode(), now we need to block to wait for it, to ensure
+ * zp->z_vnode is guaranteed set after this code.
+ */
+void zfs_znode_wait_vnode(znode_t *zp)
+{
+	callb_cpr_t cpr;
+    int times = 0;
+    /* Here we wait for z_vnode to be set (not NULL) */
+
+	CALLB_CPR_INIT(&cpr, &zp->z_vnode_create_lock, callb_generic_cpr, FTAG);
+
+    mutex_enter(&zp->z_vnode_create_lock);
+    /* Already completed? */
+    if (zp->z_vnode) {
+        mutex_exit(&zp->z_vnode_create_lock);
+        return;
+    }
+
+    /* Wait for vnode_create thread to wake us */
+    while (!zp->z_vnode) {
+		CALLB_CPR_SAFE_BEGIN(&cpr);
+		(void) cv_timedwait_interruptible(&zp->z_vnode_create_cv,
+                                          &zp->z_vnode_create_lock,
+                                          (ddi_get_lbolt() + (hz)));
+		CALLB_CPR_SAFE_END(&cpr, &zp->z_vnode_create_lock);
+        times++;
+        if (times == 20)
+            printf("ZFS: zp %p is still waiting on vnode\n", zp);
+
+        if (times == 60) {
+            printf("ZFS: resuming %p to attempt to avoid deadlock\n", zp);
+            break;
+        }
+
+    }
+    mutex_exit(&zp->z_vnode_create_lock);
+}
+
+/*
+ * Create a thread to call vnode_create (to avoid locking against ourselves)
+ */
+int zfs_znode_getvnode(znode_t *zp, zfsvfs_t *zfsvfs, struct vnode **vpp)
+{
+
+
+    zp->z_zfsvfs = zfsvfs;
+	while (thread_create(NULL, 0, _zfs_znode_getvnode, zp, 0, &p0,
+                         TS_RUN, minclsyspri) == NULL) delay(hz>>4);
 
     return 0;
 }
+
+
+
+
+
 
 /*
  * Maybe these should live in vfsops

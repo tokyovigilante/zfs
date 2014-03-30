@@ -586,6 +586,7 @@ zfs_obtain_xattr(znode_t *dzp, const char *name, mode_t mode, cred_t *cr,
                    NULL /* vsecp */, 0 /*acl_ids.z_fuidp*/, &vattr);
     zfs_acl_ids_free(&acl_ids);
 	dmu_tx_commit(tx);
+    zfs_znode_wait_vnode(xzp);
 
 	zfs_dirent_unlock(dl);
  out:
@@ -1506,4 +1507,3 @@ void aces_from_acl(ace_t *aces, int *nentries, struct kauth_acl *k_acl)
     }
 
 }
-

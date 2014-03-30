@@ -1202,22 +1202,13 @@ zfsvfs_create(const char *osname, zfsvfs_t **zfvp)
 
 	mutex_init(&zfsvfs->z_znodes_lock, NULL, MUTEX_DEFAULT, NULL);
 	mutex_init(&zfsvfs->z_lock, NULL, MUTEX_DEFAULT, NULL);
-	mutex_init(&zfsvfs->z_reclaim_list_lock, NULL, MUTEX_DEFAULT, NULL);
-	mutex_init(&zfsvfs->z_reclaim_thr_lock, NULL, MUTEX_DEFAULT, NULL);
-	cv_init(&zfsvfs->z_reclaim_thr_cv, NULL, CV_DEFAULT, NULL);
 	list_create(&zfsvfs->z_all_znodes, sizeof (znode_t),
 	    offsetof(znode_t, z_link_node));
-	list_create(&zfsvfs->z_reclaim_znodes, sizeof (znode_t),
-	    offsetof(znode_t, z_link_reclaim_node));
 	rrw_init(&zfsvfs->z_teardown_lock, B_FALSE);
 	rw_init(&zfsvfs->z_teardown_inactive_lock, NULL, RW_DEFAULT, NULL);
 	rw_init(&zfsvfs->z_fuid_lock, NULL, RW_DEFAULT, NULL);
 	for (i = 0; i != ZFS_OBJ_MTX_SZ; i++)
 		mutex_init(&zfsvfs->z_hold_mtx[i], NULL, MUTEX_DEFAULT, NULL);
-
-    zfsvfs->z_reclaim_thread_exit = FALSE;
-	(void) thread_create(NULL, 0, vnop_reclaim_thread, zfsvfs, 0, &p0,
-	    TS_RUN, minclsyspri);
 
 	*zfvp = zfsvfs;
 	return (0);
@@ -1324,23 +1315,9 @@ zfsvfs_free(zfsvfs_t *zfsvfs)
 
 	zfs_fuid_destroy(zfsvfs);
 
-    dprintf("stopping reclaim thread\n");
-	mutex_enter(&zfsvfs->z_reclaim_thr_lock);
-    zfsvfs->z_reclaim_thread_exit = TRUE;
-	cv_signal(&zfsvfs->z_reclaim_thr_cv);
-	while (zfsvfs->z_reclaim_thread_exit == TRUE)
-		cv_wait(&zfsvfs->z_reclaim_thr_cv, &zfsvfs->z_reclaim_thr_lock);
-	mutex_exit(&zfsvfs->z_reclaim_thr_lock);
-
-	mutex_destroy(&zfsvfs->z_reclaim_thr_lock);
-	cv_destroy(&zfsvfs->z_reclaim_thr_cv);
-    dprintf("Stopped, then releasing node.\n");
-
 	mutex_destroy(&zfsvfs->z_znodes_lock);
 	mutex_destroy(&zfsvfs->z_lock);
-	mutex_destroy(&zfsvfs->z_reclaim_list_lock);
 	list_destroy(&zfsvfs->z_all_znodes);
-	list_destroy(&zfsvfs->z_reclaim_znodes);
 	rrw_destroy(&zfsvfs->z_teardown_lock);
 	rw_destroy(&zfsvfs->z_teardown_inactive_lock);
 	rw_destroy(&zfsvfs->z_fuid_lock);
@@ -2337,6 +2314,10 @@ zfs_vfs_root(struct mount *mp, vnode_t **vpp, __unused vfs_context_t context)
 
 	ZFS_EXIT(zfsvfs);
 
+    if (error == 0)
+        zfs_znode_wait_vnode(rootzp);
+
+
 #if 0
 	if (error == 0) {
 		error = zfs_vnode_lock(*vpp, 0);
@@ -2582,12 +2563,6 @@ zfs_vfs_unmount(struct mount *mp, int mntflags, vfs_context_t context)
 	}
 #endif
 
-    dprintf("Signalling reclaim sync\n");
-	/* We just did final sync, tell reclaim to mop it up */
-    cv_signal(&zfsvfs->z_reclaim_thr_cv);
-    /* Not the classiest sync control ... */
-    delay(hz);
-
 
 #endif
 
@@ -2687,6 +2662,8 @@ zfs_vget_internal(zfsvfs_t *zfsvfs, ino64_t ino, vnode_t **vpp)
         dprintf("zget failed %d\n", err);
         return err;
     }
+
+    zfs_znode_wait_vnode(zp);
 
 	/* Don't expose EA objects! */
 	if (zp->z_pflags & ZFS_XATTR) {
@@ -2829,6 +2806,8 @@ zfs_vfs_fhtovp(struct mount *mp, int fhlen, unsigned char *fhp,
 	if ((error = zfs_zget(zfsvfs, obj_num, &zp))) {
 		goto out;
 	}
+
+    zfs_znode_wait_vnode(zp);
 
 	zp_gen = zp->z_gen;
 	if (zp_gen == 0)

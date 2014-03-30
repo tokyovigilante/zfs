@@ -321,6 +321,9 @@ zfs_dirent_lock(zfs_dirlock_t **dlpp, znode_t *dzp, char *name, znode_t **zpp,
 			zfs_dirent_unlock(dl);
 			return (error);
 		}
+
+		zfs_znode_wait_vnode(*zpp);
+
 		if (!(flag & ZXATTR) && update)
 			dnlc_update(ZTOV(dzp), name, ZTOV(*zpp));
 	}
@@ -416,6 +419,11 @@ zfs_dirlook(znode_t *dzp, char *name, vnode_t **vpp, int flags,
 		if (error == 0)
 			*vpp = ZTOV(zp);
 		rw_exit(&dzp->z_parent_lock);
+        if (error == 0) {
+            zfs_znode_wait_vnode(zp);
+			*vpp = ZTOV(zp);
+        }
+
 	} else if (zfs_has_ctldir(dzp) && strcmp(name, ZFS_CTLDIR_NAME) == 0) {
 		*vpp = zfsctl_root(dzp);
 	} else {
@@ -515,6 +523,7 @@ zfs_unlinked_drain(zfsvfs_t *zfsvfs)
                  */
                 if (error != 0)
                         continue;
+                zfs_znode_wait_vnode(zp);
 
                 zp->z_unlinked = B_TRUE;
                 VN_RELE(ZTOV(zp));
@@ -557,6 +566,7 @@ zfs_purgedir(znode_t *dzp)
 			skipped += 1;
 			continue;
 		}
+        zfs_znode_wait_vnode(xzp);
 
 /*
 	    ASSERT((ZTOV(xzp)->v_type == VREG) ||
@@ -651,6 +661,7 @@ zfs_rmnode(znode_t *zp)
 	if (error == 0 && xattr_obj) {
 		error = zfs_zget(zfsvfs, xattr_obj, &xzp);
 		ASSERT(error == 0);
+        if (error == 0) zfs_znode_wait_vnode(xzp);
 	}
 
 	acl_obj = zfs_external_acl(zp);
@@ -725,7 +736,7 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	vnode_t *vp = ZTOV(zp);
 	uint64_t value;
-	int zp_is_dir = (vnode_isdir(vp));
+	int zp_is_dir = (IFTOVT((mode_t)zp->z_mode) == VDIR);
 	sa_bulk_attr_t bulk[5];
 	uint64_t mtime[2], ctime[2];
 	int count = 0;
@@ -784,7 +795,9 @@ zfs_link_create(zfs_dirlock_t *dl, znode_t *zp, dmu_tx_t *tx, int flag)
 	    8, 1, &value, tx);
 	ASSERT(error == 0);
 
+#ifndef __APPLE__
 	dnlc_update(ZTOV(dzp), dl->dl_name, vp);
+#endif
 
 	return (0);
 }
@@ -999,6 +1012,8 @@ zfs_make_xattrdir(znode_t *zp, vattr_t *vap, vnode_t **xvpp, cred_t *cr)
 
 	zfs_acl_ids_free(&acl_ids);
 	dmu_tx_commit(tx);
+
+    zfs_znode_wait_vnode(xzp);
 
 	*xvpp = ZTOV(xzp);
 
