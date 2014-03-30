@@ -1280,53 +1280,36 @@ again:
         /*
          * We can only call getwithvid if vp is not NULL
          */
-        if (ZTOV(zp)) {
-            /* Standard ZFS code here */
 
-            mutex_enter(&zp->z_lock);
-            ASSERT3U(zp->z_id, ==, obj_num);
-            if (zp->z_unlinked) {
-                err = (ENOENT);
-            } else {
-                vp = ZTOV(zp);
-                *zpp = zp;
-                err = 0;
-            }
-
-            mutex_exit(&zp->z_lock);
-            sa_buf_rele(db, NULL);
-            ZFS_OBJ_HOLD_EXIT(zfsvfs, obj_num);
-
-            if (err == 0) {
-
-                dprintf("attaching vnode %p\n", vp);
-                if ((vnode_getwithvid(vp, zp->z_vid) != 0)) {
-                    goto again;
-                }
-
-            }
-
-            getnewvnode_drop_reserve();
-            return (err);
+        mutex_enter(&zp->z_lock);
+        ASSERT3U(zp->z_id, ==, obj_num);
+        if (zp->z_unlinked) {
+            err = (ENOENT);
+        } else {
+            vp = ZTOV(zp);
+            *zpp = zp;
+            err = 0;
         }
 
-
-        /* VP is NULL */
-
-        /* Clean up locks */
+        mutex_exit(&zp->z_lock);
         sa_buf_rele(db, NULL);
         ZFS_OBJ_HOLD_EXIT(zfsvfs, obj_num);
+
+        if (err == 0) {
+
+            printf("Found stray zp %p without vp, correcting\n", zp);
+
+            zfs_znode_wait_vnode(zp);
+
+            dprintf("attaching vnode %p\n", vp);
+            if ((vnode_getwithvid(vp, zp->z_vid) != 0)) {
+                goto again;
+            }
+
+        }
+
         getnewvnode_drop_reserve();
-
-        printf("Found stray zp %p without vp, correcting\n", zp);
-        rw_enter(&zfsvfs->z_teardown_inactive_lock, RW_READER);
-        if (zp->z_sa_hdl == NULL)
-            zfs_znode_free(zp);
-        else
-            zfs_zinactive(zp);
-        rw_exit(&zfsvfs->z_teardown_inactive_lock);
-
-        goto again;
+        return (err);
 
     } /* HDL != NULL */
 
