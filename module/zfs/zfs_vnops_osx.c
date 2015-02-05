@@ -60,6 +60,10 @@
 #include <sys/callb.h>
 #include <sys/unistd.h>
 
+
+#include <AvailabilityMacros.h>
+
+
 #ifdef _KERNEL
 #include <sys/sysctl.h>
 unsigned int debug_vnop_osx_printf = 0;
@@ -2599,65 +2603,42 @@ zfs_vnop_select(struct vnop_select_args *ap)
 	return (1);
 }
 
+/*
+ * Common function for both zfs_vnop_readdirattr and zfs_vnop_getattrlistbulk.
+ * This either fills in a vnode_attr structure or fills in an attrbute buffer
+ * Currently the difference in behaviour required for the two vnops is keyed
+ * on whether the passed in vnode_attr pointer is null or not. If the pointer
+ * is null we fill in buffer passed and if it is not null we fill in the fields
+ * of the vnode_attr structure.
+ */
 static int
-zfs_vnop_readdirattr(struct vnop_readdirattr_args *ap)
-#if 0
-	struct vnop_readdirattr_args {
-		struct vnodeop_desc *a_desc;
-		struct vnode	*a_vp;
-		struct attrlist	*a_alist;
-		struct uio	*a_uio;
-		u_long		a_maxcount;
-		u_long		a_options;
-		u_long		*a_newstate;
-		int		*a_eofflag;
-		u_long		*a_actualcount;
-		vfs_context_t	a_context;
-	};
-#endif
+zfs_readdirattr_internal(struct vnode *vp, struct attrlist *alp,
+						 struct vnode_attr *vap, struct uio *uio,
+						 uint64_t options, int maxcount, uint32_t *newstate,
+						 int *eofflag, int *actualcount, vfs_context_t ctx)
 {
-	struct vnode *vp = ap->a_vp;
-	struct attrlist *alp = ap->a_alist;
-	struct uio *uio = ap->a_uio;
 	znode_t *zp = VTOZ(vp);
 	zfsvfs_t *zfsvfs = zp->z_zfsvfs;
 	zap_cursor_t zc;
 	zap_attribute_t zap;
 	attrinfo_t attrinfo;
-	int maxcount = ap->a_maxcount;
 	uint64_t offset = (uint64_t)uio_offset(uio);
 	u_int32_t fixedsize;
-	u_int32_t maxsize;
+	u_int32_t maxsize=0;
 	u_int32_t attrbufsize;
 	void *attrbufptr = NULL;
 	void *attrptr;
 	void *varptr;  /* variable-length storage area */
-	boolean_t user64 = vfs_context_is64bit(ap->a_context);
+	boolean_t user64 = vfs_context_is64bit(ctx);
 	int prefetch = 0;
 	int error = 0;
+	caddr_t namebuf = NULL;
 
 	dprintf("+vnop_readdirattr\n");
 
-	*(ap->a_actualcount) = 0;
-	*(ap->a_eofflag) = 0;
+	*(actualcount) = 0;
+	*(eofflag) = 0;
 
-	/*
-	 * Check for invalid options or invalid uio.
-	 */
-	if (((ap->a_options & ~(FSOPT_NOINMEMUPDATE | FSOPT_NOFOLLOW)) != 0) ||
-		(uio_resid(uio) <= 0) || (maxcount <= 0)) {
-		return (EINVAL);
-	}
-	/*
-	 * Reject requests for unsupported attributes.
-	 */
-	if ((alp->bitmapcount != ZFS_ATTR_BIT_MAP_COUNT) ||
-	    (alp->commonattr & ~ZFS_ATTR_CMN_VALID) ||
-	    (alp->dirattr & ~ZFS_ATTR_DIR_VALID) ||
-	    (alp->fileattr & ~ZFS_ATTR_FILE_VALID) ||
-	    (alp->volattr != 0 || alp->forkattr != 0)) {
-		return (EINVAL);
-	}
 	/*
 	 * Check if we should prefetch znodes
 	 */
@@ -2669,20 +2650,36 @@ zfs_vnop_readdirattr(struct vnop_readdirattr_args *ap)
 	/*
 	 * Setup a buffer to hold the packed attributes.
 	 */
-	fixedsize = sizeof (u_int32_t) + getpackedsize(alp, user64);
-	maxsize = fixedsize;
-	if (alp->commonattr & ATTR_CMN_NAME)
-		maxsize += ZAP_MAXNAMELEN + 1;
-	attrbufptr = (void*)kmem_alloc(maxsize, KM_SLEEP);
-	if (attrbufptr == NULL) {
-		return (ENOMEM);
+	if (!vap) {
+
+		/* dirlistattr */
+		fixedsize = sizeof (u_int32_t) + getpackedsize(alp, user64);
+		maxsize = fixedsize;
+		if (alp->commonattr & ATTR_CMN_NAME)
+			maxsize += ZAP_MAXNAMELEN + 1;
+		attrbufptr = (void*)kmem_alloc(maxsize, KM_SLEEP);
+		if (attrbufptr == NULL) {
+			return (ENOMEM);
+		}
+		attrptr = attrbufptr;
+		varptr = (char *)attrbufptr + fixedsize;
+
+	} else {
+
+		/* getlistattrbulk */
+		if ((alp->commonattr & ATTR_CMN_NAME) && !vap->va_name) {
+			MALLOC(namebuf, caddr_t, MAXPATHLEN, M_TEMP, M_WAITOK);
+			if (!namebuf) {
+				return ENOMEM;
+			}
+			vap->va_name = namebuf;
+		}
 	}
-	attrptr = attrbufptr;
-	varptr = (char *)attrbufptr + fixedsize;
+
 
 	attrinfo.ai_attrlist = alp;
 	attrinfo.ai_varbufend = (char *)attrbufptr + maxsize;
-	attrinfo.ai_context = ap->a_context;
+	attrinfo.ai_context = ctx;
 
 	ZFS_ENTER(zfsvfs);
 
@@ -2728,7 +2725,7 @@ zfs_vnop_readdirattr(struct vnop_readdirattr_args *ap)
 			 * Grab next entry.
 			 */
 			if ((error = zap_cursor_retrieve(&zc, &zap))) {
-				*(ap->a_eofflag) = (error == ENOENT);
+				*(eofflag) = (error == ENOENT);
 				goto update;
 			}
 
@@ -2770,76 +2767,120 @@ zfs_vnop_readdirattr(struct vnop_readdirattr_args *ap)
 			}
 		}
 
-		/*
-		 * Setup for the next item's attribute list
-		 */
-		*((u_int32_t *)attrptr) = 0; /* byte count slot */
-		attrptr = ((u_int32_t *)attrptr) + 1; /* fixed attr start */
-		attrinfo.ai_attrbufpp = &attrptr;
-		attrinfo.ai_varbufpp = &varptr;
 
-		/*
-		 * Pack entries into attribute buffer.
-		 */
-		if (alp->commonattr) {
-			commonattrpack(&attrinfo, zfsvfs, tmp_zp, zap.za_name,
-			    objnum, vtype, user64);
-		}
-		if (alp->dirattr && vtype == VDIR) {
-			dirattrpack(&attrinfo, tmp_zp);
-		}
-		if (alp->fileattr && vtype != VDIR) {
-			fileattrpack(&attrinfo, zfsvfs, tmp_zp);
-		}
-		/* All done with tmp znode. */
-		if (prefetch && tmp_zp) {
-			vnode_put(ZTOV(tmp_zp));
-			tmp_zp = NULL;
-		}
-		attrbufsize = ((char *)varptr - (char *)attrbufptr);
-
-		/*
-		 * Make sure there's enough buffer space remaining.
-		 */
-		if (uio_resid(uio) < 0 ||
-			attrbufsize > (u_int32_t)uio_resid(uio)) {
-			break;
-		} else {
-			*((u_int32_t *)attrbufptr) = attrbufsize;
-			error = uiomove((caddr_t)attrbufptr, attrbufsize,
-			    UIO_READ, uio);
-			if (error != 0)
-				break;
-			attrptr = attrbufptr;
-			/* Point to variable-length storage */
-			varptr = (char *)attrbufptr + fixedsize;
-			*(ap->a_actualcount) += 1;
+		if (!vap) {
+			/*
+			 * Setup for the next item's attribute list
+			 */
+			*((u_int32_t *)attrptr) = 0; /* byte count slot */
+			attrptr = ((u_int32_t *)attrptr) + 1; /* fixed attr start */
+			attrinfo.ai_attrbufpp = &attrptr;
+			attrinfo.ai_varbufpp = &varptr;
 
 			/*
-			 * Move to the next entry, fill in the previous offset.
+			 * Pack entries into attribute buffer.
 			 */
-		skip_entry:
-			if ((offset > 2) || ((offset == 2) &&
-			    !zfs_show_ctldir(zp))) {
-				zap_cursor_advance(&zc);
-				offset = zap_cursor_serialize(&zc);
+			if (alp->commonattr) {
+				commonattrpack(&attrinfo, zfsvfs, tmp_zp, zap.za_name,
+							   objnum, vtype, user64);
+			}
+			if (alp->dirattr && vtype == VDIR) {
+				dirattrpack(&attrinfo, tmp_zp);
+			}
+			if (alp->fileattr && vtype != VDIR) {
+				fileattrpack(&attrinfo, zfsvfs, tmp_zp);
+			}
+			/* All done with tmp znode. */
+			if (prefetch && tmp_zp) {
+				vnode_put(ZTOV(tmp_zp));
+				tmp_zp = NULL;
+			}
+			attrbufsize = ((char *)varptr - (char *)attrbufptr);
+
+			/*
+			 * Make sure there's enough buffer space remaining.
+			 */
+			if (uio_resid(uio) < 0 ||
+				attrbufsize > (u_int32_t)uio_resid(uio)) {
+				break;
 			} else {
-				offset += 1;
+				*((u_int32_t *)attrbufptr) = attrbufsize;
+				error = uiomove((caddr_t)attrbufptr, attrbufsize,
+								UIO_READ, uio);
+				if (error != 0)
+					break;
+				attrptr = attrbufptr;
+				/* Point to variable-length storage */
+				varptr = (char *)attrbufptr + fixedsize;
+				*(actualcount) += 1;
+
+				/*
+				 * Move to the next entry, fill in the previous offset.
+				 */
+			  skip_entry:
+				if ((offset > 2) || ((offset == 2) &&
+									 !zfs_show_ctldir(zp))) {
+					zap_cursor_advance(&zc);
+					offset = zap_cursor_serialize(&zc);
+				} else {
+					offset += 1;
+				}
+
+				/* Termination checks */
+				if (--maxcount <= 0 || uio_resid(uio) < 0 ||
+					(u_int32_t)uio_resid(uio) < (fixedsize +
+												 ZAP_AVENAMELEN)) {
+					break;
+				}
 			}
 
-			/* Termination checks */
-			if (--maxcount <= 0 || uio_resid(uio) < 0 ||
-			    (u_int32_t)uio_resid(uio) < (fixedsize +
-			    ZAP_AVENAMELEN)) {
-				break;
+
+
+
+		} else {  // !vap -> getattrlistbulk
+
+
+			size_t orig_resid = (size_t)uio_resid(uio);
+			size_t resid;
+
+			get_vattr_data_for_attrs(alp, vap, zfsvfs, vp, zp,
+									 NULL, NULL, NULL, ctx);
+
+			error = vfs_attr_pack(vp, uio, alp, options, vap,
+								  NULL, ctx);
+
+			/* All done with vnode. */
+			if (prefetch && tmp_zp) {
+				vnode_put(ZTOV(tmp_zp));
+				tmp_zp = NULL;
 			}
-		}
+
+			resid = uio_resid(uio);
+			/* Was this entry succesful ? */
+			if (error || resid == orig_resid)
+				break;
+
+			/* Save the last valid catalog entry */
+			//lastdescp = &ce_list->entry[i].ce_desc;
+			offset += 1;
+			*actualcount += 1;
+
+			/* Do we have the bare minimum for the next entry ? */
+			if (resid < sizeof(uint32_t))
+				break;
+
+		} // !vap
+
 	}
-update:
+  update:
 	zap_cursor_fini(&zc);
 
 	if (attrbufptr) {
 		kmem_free(attrbufptr, maxsize);
+	}
+	if (namebuf) {
+		FREE(namebuf, M_TEMP);
+		vap->va_name = NULL;
 	}
 	if (error == ENOENT) {
 		error = 0;
@@ -2847,13 +2888,90 @@ update:
 	ZFS_ACCESSTIME_STAMP(zfsvfs, zp);
 
 	/* XXX newstate TBD */
-	*ap->a_newstate = zp->z_atime[0] + zp->z_atime[1];
+	*newstate = zp->z_atime[0] + zp->z_atime[1];
 	uio_setoffset(uio, offset);
 
 	ZFS_EXIT(zfsvfs);
 	dprintf("-readdirattr: error %d\n", error);
 	return (error);
 }
+
+static int
+zfs_vnop_readdirattr(struct vnop_readdirattr_args *ap)
+#if 0
+	struct vnop_readdirattr_args {
+		struct vnodeop_desc *a_desc;
+		struct vnode	*a_vp;
+		struct attrlist	*a_alist;
+		struct uio	*a_uio;
+		u_long		a_maxcount;
+		u_long		a_options;
+		u_long		*a_newstate;
+		int		*a_eofflag;
+		u_long		*a_actualcount;
+		vfs_context_t	a_context;
+	};
+#endif
+{
+	int error;
+	struct attrlist *alp = ap->a_alist;
+
+	/*
+	 * Check for invalid options or invalid uio.
+	 */
+	if (((ap->a_options & ~(FSOPT_NOINMEMUPDATE | FSOPT_NOFOLLOW)) != 0) ||
+		(uio_resid(ap->a_uio) <= 0) || (ap->a_maxcount <= 0)) {
+		return (EINVAL);
+	}
+	/*
+	 * Reject requests for unsupported attributes.
+	 */
+	if ((alp->bitmapcount != ZFS_ATTR_BIT_MAP_COUNT) ||
+	    (alp->commonattr & ~ZFS_ATTR_CMN_VALID) ||
+	    (alp->dirattr & ~ZFS_ATTR_DIR_VALID) ||
+	    (alp->fileattr & ~ZFS_ATTR_FILE_VALID) ||
+	    (alp->volattr != 0 || alp->forkattr != 0)) {
+		return (EINVAL);
+	}
+
+	error = zfs_readdirattr_internal(ap->a_vp, alp, NULL, ap->a_uio,
+									 (uint64_t)ap->a_options, ap->a_maxcount,
+									 ap->a_newstate, ap->a_eofflag,
+									 (int *)ap->a_actualcount, ap->a_context);
+	return (error);
+}
+
+
+#ifdef AVAILABLE_MAC_OS_X_VERSION_10_10_AND_LATER
+static int
+zfs_vnop_getattrlistbulk(struct vnop_getattrlistbulk_args *ap)
+#if 0
+struct vnop_getattrlistbulk_args {
+        struct vnodeop_desc *a_desc;
+        vnode_t a_vp;
+        struct attrlist *a_alist;
+        struct vnode_attr *a_vap;
+        struct uio *a_uio;
+        void *a_private;
+        uint64_t a_options;
+        int32_t *a_eofflag;
+        int32_t *a_actualcount;
+        vfs_context_t a_context;
+};
+#endif
+{
+	int error = 0;
+
+	printf("+vnop_getattrlistbulk\n");
+
+	error = zfs_readdirattr_internal(ap->a_vp, ap->a_alist, ap->a_vap,
+									 ap->a_uio, (uint64_t)ap->a_options, 0,
+									 NULL, ap->a_eofflag,
+									 (int *)ap->a_actualcount, ap->a_context);
+
+	return (error);
+}
+#endif
 
 
 #ifdef WITH_SEARCHFS
@@ -2944,6 +3062,9 @@ struct vnodeopv_entry_desc zfs_dvnodeops_template[] = {
 	{&vnop_removexattr_desc, (VOPFUNC)zfs_vnop_removexattr},
 	{&vnop_listxattr_desc,	(VOPFUNC)zfs_vnop_listxattr},
 	{&vnop_readdirattr_desc, (VOPFUNC)zfs_vnop_readdirattr},
+#ifdef AVAILABLE_MAC_OS_X_VERSION_10_10_AND_LATER
+	{&vnop_getattrlistbulk_desc, (VOPFUNC)zfs_vnop_getattrlistbulk},
+#endif
 #ifdef WITH_SEARCHFS
 	{&vnop_searchfs_desc,	(VOPFUNC)zfs_vnop_searchfs},
 #endif
