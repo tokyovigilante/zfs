@@ -1998,6 +1998,7 @@ zfs_vnop_getxattr(struct vnop_getxattr_args *ap)
 	};
 #endif
 {
+	stac();
 	DECLARE_CRED(ap);
 	struct vnode *vp = ap->a_vp;
 	struct vnode *xdvp = NULLVP;
@@ -2031,7 +2032,7 @@ zfs_vnop_getxattr(struct vnop_getxattr_args *ap)
 	if ((error = zfs_get_xattrdir(zp, &xdvp, cr, 0))) {
 		goto out;
 	}
-	stac()
+
 	cn.pn_bufsize = strlen(ap->a_name) + 1;
 	cn.pn_buf = (char*)kmem_zalloc(cn.pn_bufsize, KM_SLEEP);
 
@@ -2165,6 +2166,7 @@ out:
 
 	ZFS_EXIT(zfsvfs);
 	/* dprintf("-getxattr vp %p : %d\n", ap->a_vp, error); */
+	clac();
 	return (error);
 }
 
@@ -2266,6 +2268,7 @@ zfs_vnop_removexattr(struct vnop_removexattr_args *ap)
 	};
 #endif
 {
+	stac();
 	DECLARE_CRED_AND_CONTEXT(ap);
 	struct vnode *vp = ap->a_vp;
 	struct vnode *xdvp = NULLVP;
@@ -2325,6 +2328,7 @@ out:
 
 	ZFS_EXIT(zfsvfs);
 	dprintf("-removexattr vp %p: error %d\n", ap->a_vp, error);
+	clac();
 	return (error);
 }
 
