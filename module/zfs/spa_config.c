@@ -317,10 +317,11 @@ spa_all_configs(uint64_t *generation)
 	while ((spa = spa_next(spa)) != NULL) {
 		if (INGLOBALZONE(curproc) ||
 		    zone_dataset_visible(spa_name(spa), NULL)) {
-			mutex_enter(&spa->spa_props_lock);
-			VERIFY(nvlist_add_nvlist(pools, spa_name(spa),
-			    spa->spa_config) == 0);
-			mutex_exit(&spa->spa_props_lock);
+ 			mutex_enter(&spa->spa_props_lock);
+			printf("ZFS: Adding pool '%s' to nvlist.¥n", spa_name(spa) ? spa_name(spa) : "(null)");
+			delay(hz); 
+            VERIFY(nvlist_add_nvlist(pools, spa_name(spa),
+                spa->spa_config) == 0);			mutex_exit(&spa->spa_props_lock);
 		}
 	}
 	*generation = spa_config_generation;

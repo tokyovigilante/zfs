@@ -72,6 +72,8 @@ unsigned int zfs_vnop_ignore_positives = 0;
 unsigned int zfs_vnop_create_negatives = 1;
 #endif
 
+#include <i386/proc_reg.h>
+
 #define	DECLARE_CRED(ap) \
 	cred_t *cr = (cred_t *)vfs_context_ucred((ap)->a_context)
 #define	DECLARE_CONTEXT(ap) \
@@ -2029,7 +2031,7 @@ zfs_vnop_getxattr(struct vnop_getxattr_args *ap)
 	if ((error = zfs_get_xattrdir(zp, &xdvp, cr, 0))) {
 		goto out;
 	}
-
+	stac()
 	cn.pn_bufsize = strlen(ap->a_name) + 1;
 	cn.pn_buf = (char*)kmem_zalloc(cn.pn_bufsize, KM_SLEEP);
 

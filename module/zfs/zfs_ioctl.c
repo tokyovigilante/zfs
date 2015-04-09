@@ -98,6 +98,9 @@
 #define MNTTAB "/etc/mtab"
 
 static int mnttab_file_create(void);
+
+#include <i386/proc_reg.h>
+
 #endif
 
 //#define dprintf printf
@@ -1195,20 +1198,20 @@ get_nvlist(uint64_t nvl, uint64_t size, int iflag, nvlist_t **nvp)
 	if (size == 0)
 		return (SET_ERROR(EINVAL));
 
-
+	stac();
 	packed = kmem_alloc(size, KM_SLEEP | KM_NODEBUG);
-
 	if ((error = ddi_copyin((void *)(uintptr_t)nvl, packed, size,
 							iflag)) != 0) {
 		kmem_free(packed, size);
+		clac();
 		return (error);
 	}
-
 	if ((error = nvlist_unpack(packed, size, &list, 0)) != 0) {
 		kmem_free(packed, size);
+		clac();
 		return (error);
 	}
-
+	clac();
 	kmem_free(packed, size);
 
 	*nvp = list;
@@ -1260,7 +1263,7 @@ put_nvlist(zfs_cmd_t *zc, nvlist_t *nvl)
 	char *packed = NULL;
 	int error = 0;
 	size_t size;
-
+	stac();
 	size = fnvlist_size(nvl);
 
 	if (size > zc->zc_nvlist_dst_size) {
@@ -1275,6 +1278,7 @@ put_nvlist(zfs_cmd_t *zc, nvlist_t *nvl)
 
 	zc->zc_nvlist_dst_size = size;
 	zc->zc_nvlist_dst_filled = B_TRUE;
+	clac();
 	return (error);
 }
 
