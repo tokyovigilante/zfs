@@ -1998,7 +1998,6 @@ zfs_vnop_getxattr(struct vnop_getxattr_args *ap)
 	};
 #endif
 {
-	stac();
 	DECLARE_CRED(ap);
 	struct vnode *vp = ap->a_vp;
 	struct vnode *xdvp = NULLVP;
@@ -2134,7 +2133,8 @@ typedef struct FndrFileInfo FndrFileInfo;
 			*/
 
 			extinfo->date_added = OSSwapBigToHostInt32(va_crtime.tv_sec);
-         }
+        }
+#if 0
         if (IFTOVT((mode_t)zp->z_mode) == VDIR) {
 			struct FndrExtendedDirInfo *extinfo = (struct FndrExtendedDirInfo *)finfo;
 			extinfo->date_added = 0;
@@ -2147,7 +2147,7 @@ typedef struct FndrFileInfo FndrFileInfo;
 
 			extinfo->date_added = OSSwapBigToHostInt32(va_crtime.tv_sec);
          }
-
+#endif
 		if (bufsize != 32) error = ERANGE; // finderinfo must be 32 bytes.
 
 	}
@@ -2166,7 +2166,6 @@ out:
 
 	ZFS_EXIT(zfsvfs);
 	/* dprintf("-getxattr vp %p : %d\n", ap->a_vp, error); */
-	clac();
 	return (error);
 }
 
