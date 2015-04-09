@@ -318,8 +318,6 @@ spa_all_configs(uint64_t *generation)
 		if (INGLOBALZONE(curproc) ||
 		    zone_dataset_visible(spa_name(spa), NULL)) {
  			mutex_enter(&spa->spa_props_lock);
-			printf("ZFS: Adding pool '%s' to nvlist.¥n", spa_name(spa) ? spa_name(spa) : "(null)");
-			delay(hz); 
             VERIFY(nvlist_add_nvlist(pools, spa_name(spa),
                 spa->spa_config) == 0);			mutex_exit(&spa->spa_props_lock);
 		}
